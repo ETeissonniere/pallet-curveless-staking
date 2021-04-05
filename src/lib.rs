@@ -59,14 +59,14 @@ use sp_npos_elections::{
 };
 use sp_runtime::{
     traits::{
-        AtLeast32BitUnsigned, CheckedSub, Convert, Dispatchable, SaturatedConversion, Saturating,
-        StaticLookup, Zero,
+        AccountIdConversion, AtLeast32BitUnsigned, CheckedSub, Convert, Dispatchable,
+        SaturatedConversion, Saturating, StaticLookup, Zero,
     },
     transaction_validity::{
         InvalidTransaction, TransactionPriority, TransactionSource, TransactionValidity,
         TransactionValidityError, ValidTransaction,
     },
-    DispatchError, PerU16, Perbill, Percent, RuntimeDebug,
+    DispatchError, ModuleId, PerU16, Perbill, Percent, RuntimeDebug,
 };
 #[cfg(feature = "std")]
 use sp_runtime::{Deserialize, Serialize};
@@ -556,9 +556,6 @@ pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> {
     /// Handler for the unbalanced reduction when slashing a staker.
     type Slash: OnUnbalanced<NegativeImbalanceOf<Self>>;
 
-    /// Handler for the unbalanced increment when rewarding a staker.
-    type Reward: OnUnbalanced<PositiveImbalanceOf<Self>>;
-
     /// Number of sessions per era.
     type SessionsPerEra: Get<SessionIndex>;
 
@@ -618,6 +615,10 @@ pub trait Config: frame_system::Config + SendTransactionTypes<Call<Self>> {
     /// can contain as many nominators/validators as possible. On the other hand, it should be small
     /// enough to fit in the block.
     type OffchainSolutionWeightLimit: Get<Weight>;
+
+    /// This pallet's module id. Used to derivate a dedicated account id to store era rewards for
+    /// validators and nominators in.
+    type PalletId: Get<ModuleId>;
 
     /// Weight information for extrinsics in this pallet.
     type WeightInfo: WeightInfo;
@@ -770,6 +771,11 @@ decl_storage! {
         /// The total amount staked for the last `HISTORY_DEPTH` eras.
         /// If total hasn't been set or has been removed then 0 stake is returned.
         pub ErasTotalStake get(fn eras_total_stake):
+            map hasher(twox_64_concat) EraIndex => BalanceOf<T>;
+
+        /// Accumulated balances for the last `HISTORY_DEPTH` eras.
+        /// If a balance hasn't been set or has been removed then 0 balance is returned.
+        pub ErasAccumulatedBalance get(fn eras_accumulated_balance):
             map hasher(twox_64_concat) EraIndex => BalanceOf<T>;
 
         /// Mode of era forcing.
@@ -3336,6 +3342,17 @@ impl<T: Config> frame_support::unsigned::ValidateUnsigned for Module<T> {
                 .map_err(Into::into)
         } else {
             Err(InvalidTransaction::Call.into())
+        }
+    }
+}
+
+impl<T: Config> OnUnbalanced<NegativeImbalanceOf<T>> for Module<T> {
+    fn on_nonzero_unbalanced(imbalance: NegativeImbalanceOf<T>) {
+        if let Some(active_era_info) = Self::active_era() {
+            ErasAccumulatedBalance::<T>::mutate(active_era_info.index, |v: &mut BalanceOf<T>| {
+                *v = v.saturating_add(imbalance.peek())
+            });
+            T::Currency::resolve_creating(&T::PalletId::get().into_account(), imbalance);
         }
     }
 }

@@ -5410,3 +5410,27 @@ fn cannot_bond_extra_to_lower_than_ed() {
             );
         })
 }
+
+#[test]
+fn accumulate_balance_per_era() {
+    ExtBuilder::default().build_and_execute(|| {
+        let issuance_before = Balances::total_issuance();
+
+        assert_eq!(Staking::eras_accumulated_balance(0), Zero::zero());
+
+        mock::start_active_era(1);
+        mock::make_reward_deposit(&999, 1_000);
+        assert_eq!(Staking::eras_accumulated_balance(1), 1_000);
+
+        mock::start_active_era(2);
+        mock::make_reward_deposit(&999, 2_000);
+        mock::make_reward_deposit(&999, 5_000);
+        assert_eq!(Staking::eras_accumulated_balance(2), 7_000);
+
+        let issuance_now = Balances::total_issuance();
+        assert_eq!(issuance_before, issuance_now);
+    });
+}
+
+#[test]
+fn destroy_balance_when_history_limit_reached() {}

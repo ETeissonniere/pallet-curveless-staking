@@ -21,7 +21,10 @@ use crate as staking;
 use crate::*;
 use frame_support::{
     assert_ok, parameter_types,
-    traits::{Currency, FindAuthor, Get, OnFinalize, OnInitialize, OneSessionHandler},
+    traits::{
+        Currency, ExistenceRequirement, FindAuthor, Get, OnFinalize, OnInitialize,
+        OneSessionHandler,
+    },
     weights::{constants::RocksDbWeight, Weight},
     IterableStorageMap, StorageDoubleMap, StorageMap, StorageValue,
 };
@@ -31,9 +34,9 @@ use sp_npos_elections::{
     reduce, to_support_map, ElectionScore, EvaluateSupport, ExtendedBalance, StakedAssignment,
 };
 use sp_runtime::{
-    curve::PiecewiseLinear,
     testing::{Header, TestXt, UintAuthorityId},
     traits::{IdentityLookup, Zero},
+    ModuleId,
 };
 use sp_staking::offence::{OffenceDetails, OnOffenceHandler};
 use std::{cell::RefCell, collections::HashSet};
@@ -209,19 +212,9 @@ impl pallet_timestamp::Config for Test {
     type MinimumPeriod = MinimumPeriod;
     type WeightInfo = ();
 }
-pallet_staking_reward_curve::build! {
-    const I_NPOS: PiecewiseLinear<'static> = curve!(
-        min_inflation: 0_025_000,
-        max_inflation: 0_100_000,
-        ideal_stake: 0_500_000,
-        falloff: 0_050_000,
-        max_piece_count: 40,
-        test_precision: 0_005_000,
-    );
-}
 parameter_types! {
+    pub const StakingPalletId: ModuleId = ModuleId(*b"mockstak");
     pub const BondingDuration: EraIndex = 3;
-    pub const RewardCurve: &'static PiecewiseLinear<'static> = &I_NPOS;
     pub const MaxNominatorRewardedPerValidator: u32 = 64;
     pub const UnsignedPriority: u64 = 1 << 20;
     pub const MinSolutionScoreBump: Perbill = Perbill::zero();
@@ -244,13 +237,13 @@ impl OnUnbalanced<NegativeImbalanceOf<Test>> for RewardRemainderMock {
 }
 
 impl Config for Test {
+    type PalletId = StakingPalletId;
     type Currency = Balances;
     type UnixTime = Timestamp;
     type CurrencyToVote = frame_support::traits::SaturatingCurrencyToVote;
     type RewardRemainder = RewardRemainderMock;
     type Event = Event;
     type Slash = ();
-    type Reward = ();
     type SessionsPerEra = SessionsPerEra;
     type SlashDeferDuration = SlashDeferDuration;
     type SlashCancelOrigin = frame_system::EnsureRoot<Self::AccountId>;
@@ -1010,6 +1003,19 @@ pub(crate) fn make_all_reward_payment(era: EraIndex) {
             era
         ));
     }
+}
+
+/// Withdraw some funds from `who` and pass them to the pallet as rewards.
+pub(crate) fn make_reward_deposit(who: &AccountId, amount: Balance) {
+    Staking::on_unbalanced(
+        Balances::withdraw(
+            who,
+            amount,
+            WithdrawReasons::all(),
+            ExistenceRequirement::KeepAlive,
+        )
+        .unwrap(),
+    );
 }
 
 #[macro_export]
