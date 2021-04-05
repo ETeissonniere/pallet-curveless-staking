@@ -25,7 +25,10 @@ use frame_support::{
 };
 use mock::*;
 use pallet_balances::Error as BalancesError;
-use sp_runtime::{assert_eq_error_rate, traits::BadOrigin};
+use sp_runtime::{
+    assert_eq_error_rate,
+    traits::{AccountIdConversion, BadOrigin},
+};
 use sp_staking::offence::OffenceDetails;
 use substrate_test_utils::assert_eq_uvec;
 
@@ -5427,10 +5430,41 @@ fn accumulate_balance_per_era() {
         mock::make_reward_deposit(&999, 5_000);
         assert_eq!(Staking::eras_accumulated_balance(2), 7_000);
 
+        assert_eq!(
+            Balances::total_balance(&StakingPalletId::get().into_account()),
+            8_000
+        );
+
+        // no issuance changes means that we correctly handled the imbalances
         let issuance_now = Balances::total_issuance();
         assert_eq!(issuance_before, issuance_now);
     });
 }
 
 #[test]
-fn destroy_balance_when_history_limit_reached() {}
+fn destroy_balance_when_history_limit_reached() {
+    ExtBuilder::default().build_and_execute(|| {
+        mock::start_active_era(1);
+        mock::make_reward_deposit(&999, 1_000);
+        assert_eq!(Staking::eras_accumulated_balance(1), 1_000);
+
+        mock::start_active_era(2);
+        mock::make_reward_deposit(&999, 2_000);
+        mock::make_reward_deposit(&999, 5_000);
+        assert_eq!(Staking::eras_accumulated_balance(mock::active_era()), 7_000);
+
+        mock::start_active_era(Staking::history_depth() + 2);
+
+        // Cleaned up and sent to remainder
+        assert_eq!(Staking::eras_accumulated_balance(1), Zero::zero());
+        assert_eq!(Staking::eras_accumulated_balance(2), 7_000);
+        assert_eq!(
+            Balances::total_balance(&StakingPalletId::get().into_account()),
+            7_000
+        );
+        assert_eq!(
+            mock::REWARD_REMAINDER_UNBALANCED.with(|v| *v.borrow()),
+            1_000
+        );
+    });
+}

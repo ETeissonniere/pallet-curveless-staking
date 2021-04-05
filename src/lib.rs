@@ -40,8 +40,9 @@ use frame_support::{
     ensure,
     storage::IterableStorageMap,
     traits::{
-        Currency, CurrencyToVote, EnsureOrigin, EstimateNextNewSession, Get, Imbalance, IsSubType,
-        LockIdentifier, LockableCurrency, OnUnbalanced, UnixTime, WithdrawReasons,
+        Currency, CurrencyToVote, EnsureOrigin, EstimateNextNewSession, ExistenceRequirement, Get,
+        Imbalance, IsSubType, LockIdentifier, LockableCurrency, OnUnbalanced, UnixTime,
+        WithdrawReasons,
     },
     weights::{
         constants::{WEIGHT_PER_MICROS, WEIGHT_PER_NANOS},
@@ -2898,6 +2899,19 @@ impl<T: Config> Module<T> {
         <ErasRewardPoints<T>>::remove(era_index);
         <ErasTotalStake<T>>::remove(era_index);
         ErasStartSessionIndex::remove(era_index);
+
+        // Not only clean the stored rewards but also withdraw them away
+        match T::Currency::withdraw(
+            &T::PalletId::get().into_account(),
+            ErasAccumulatedBalance::<T>::take(era_index),
+            WithdrawReasons::all(),
+            ExistenceRequirement::KeepAlive,
+        ) {
+            Ok(imbalance) => T::RewardRemainder::on_unbalanced(imbalance),
+            Err(_) => frame_support::print(
+                "Warning: an error happened when trying to handle active era's rewards remainder",
+            ),
+        };
     }
 
     /// Apply previously-unapplied slashes on the beginning of a new era, after a delay.
