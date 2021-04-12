@@ -684,33 +684,18 @@ pub(crate) fn start_active_era(era_index: EraIndex) {
     assert_eq!(current_era(), active_era());
 }
 
-pub(crate) fn current_total_payout_for_duration(duration: u64) -> Balance {
-    Zero::zero()
+pub(crate) fn current_total_payout_for_duration(era: EraIndex) -> Balance {
+    // For now this is the same
+    maximum_payout_for_duration(era)
 }
 
-pub(crate) fn maximum_payout_for_duration(duration: u64) -> Balance {
-    Zero::zero()
+pub(crate) fn maximum_payout_for_duration(era: EraIndex) -> Balance {
+    Staking::eras_accumulated_balance(era)
 }
 
-/// Time it takes to finish a session.
-///
-/// Note, if you see `time_per_session() - BLOCK_TIME`, it is fine. This is because we set the
-/// timestamp after on_initialize, so the timestamp is always one block old.
-pub(crate) fn time_per_session() -> u64 {
-    Period::get() * BLOCK_TIME
-}
-
-/// Time it takes to finish an era.
-///
-/// Note, if you see `time_per_era() - BLOCK_TIME`, it is fine. This is because we set the
-/// timestamp after on_initialize, so the timestamp is always one block old.
-pub(crate) fn time_per_era() -> u64 {
-    time_per_session() * SessionsPerEra::get() as u64
-}
-
-/// Time that will be calculated for the reward per era.
-pub(crate) fn reward_time_per_era() -> u64 {
-    time_per_era() - BLOCK_TIME
+pub(crate) fn mint_rewards(amount: Balance) {
+    let imbalance = <pallet_balances::Module<Test> as Currency<AccountId>>::issue(amount);
+    Staking::on_unbalanced(imbalance);
 }
 
 pub(crate) fn reward_all_elected() {

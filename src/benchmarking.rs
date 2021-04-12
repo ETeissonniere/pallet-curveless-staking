@@ -18,10 +18,11 @@
 //! Staking pallet benchmarking.
 
 use super::*;
-use crate::Module as Staking;
+use crate::{Module as Staking, NegativeImbalanceOf};
 use testing_utils::*;
 
 pub use frame_benchmarking::{account, benchmarks, whitelist_account, whitelisted_caller};
+use frame_support::traits::OnUnbalanced;
 use frame_system::RawOrigin;
 use sp_npos_elections::CompactSolution;
 use sp_runtime::traits::One;
@@ -118,6 +119,11 @@ pub fn create_validator_with_nominators<T: Config>(
     <ErasValidatorReward<T>>::insert(current_era, total_payout);
 
     Ok((v_stash, nominators))
+}
+
+fn mint_rewards<T: Config>() {
+    let imbalance = T::Currency::issue(1_000_000u32.into());
+    <Staking<T> as OnUnbalanced<NegativeImbalanceOf<T>>>::on_unbalanced(imbalance);
 }
 
 const USER_SEED: u32 = 999666;
@@ -370,6 +376,7 @@ benchmarks! {
             let balance = T::Currency::free_balance(&controller);
             ensure!(balance.is_zero(), "Controller has balance, but should be dead.");
         }
+        mint_rewards::<T>();
     }: payout_stakers(RawOrigin::Signed(caller), validator.clone(), current_era)
     verify {
         let balance_after = T::Currency::free_balance(&validator_controller);
@@ -403,6 +410,7 @@ benchmarks! {
             let balance = T::Currency::free_balance(&stash);
             nominator_balances_before.push(balance);
         }
+        mint_rewards::<T>();
     }: payout_stakers(RawOrigin::Signed(caller), validator.clone(), current_era)
     verify {
         let balance_after = T::Currency::free_balance(&validator);
@@ -825,6 +833,7 @@ mod tests {
                 let current_era = CurrentEra::get().unwrap();
 
                 let original_free_balance = Balances::free_balance(&validator_stash);
+                mock::mint_rewards(1_000_000);
                 assert_ok!(Staking::payout_stakers(
                     Origin::signed(1337),
                     validator_stash,

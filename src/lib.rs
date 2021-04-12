@@ -139,9 +139,6 @@ pub type OffchainAccuracy = PerU16;
 pub type BalanceOf<T> =
     <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
 
-type PositiveImbalanceOf<T> = <<T as Config>::Currency as Currency<
-    <T as frame_system::Config>::AccountId,
->>::PositiveImbalance;
 type NegativeImbalanceOf<T> = <<T as Config>::Currency as Currency<
     <T as frame_system::Config>::AccountId,
 >>::NegativeImbalance;
@@ -1821,7 +1818,7 @@ decl_module! {
         ///     - Reads: Current Era, History Depth
         ///     - Writes: History Depth
         ///     - Clear Prefix Each: Era Stakers, EraStakersClipped, ErasValidatorPrefs
-        ///     - Writes Each: ErasValidatorReward, ErasRewardPoints, ErasTotalStake, ErasStartSessionIndex
+        ///     - Writes Each: ErasValidatorReward, ErasRewardPoints, ErasTotalStake, ErasStartSessionIndex, ErasAccumulatedBalance
         /// # </weight>
         #[weight = T::WeightInfo::set_history_depth(*_era_items_deleted)]
         fn set_history_depth(origin,
@@ -2164,12 +2161,10 @@ impl<T: Config> Module<T> {
             Perbill::from_rational_approximation(exposure.own, exposure.total);
         let validator_staking_payout = validator_exposure_part * validator_leftover_payout;
 
+        let validator_effective_payout = validator_staking_payout + validator_commission_payout;
         // We can now make total validator payout:
-        if let Some(imbalance) = Self::make_payout(
-            &ledger.stash,
-            validator_staking_payout + validator_commission_payout,
-        ) {
-            Self::deposit_event(RawEvent::Reward(ledger.stash, imbalance.peek()));
+        if Self::make_payout(&ledger.stash, validator_effective_payout).is_ok() {
+            Self::deposit_event(RawEvent::Reward(ledger.stash, validator_effective_payout));
         }
 
         // Lets now calculate how this is split to the nominators.
@@ -2181,8 +2176,8 @@ impl<T: Config> Module<T> {
             let nominator_reward: BalanceOf<T> =
                 nominator_exposure_part * validator_leftover_payout;
             // We can now make nominator payout:
-            if let Some(imbalance) = Self::make_payout(&nominator.who, nominator_reward) {
-                Self::deposit_event(RawEvent::Reward(nominator.who.clone(), imbalance.peek()));
+            if Self::make_payout(&nominator.who, nominator_reward).is_ok() {
+                Self::deposit_event(RawEvent::Reward(nominator.who.clone(), nominator_reward));
             }
         }
 
@@ -2213,23 +2208,38 @@ impl<T: Config> Module<T> {
 
     /// Actually make a payment to a staker. This uses the currency's reward function
     /// to pay the right payee for the given staker account.
-    fn make_payout(stash: &T::AccountId, amount: BalanceOf<T>) -> Option<PositiveImbalanceOf<T>> {
-        let dest = Self::payee(stash);
-        match dest {
-            RewardDestination::Controller => Self::bonded(stash)
-                .and_then(|controller| Some(T::Currency::deposit_creating(&controller, amount))),
-            RewardDestination::Stash => T::Currency::deposit_into_existing(stash, amount).ok(),
-            RewardDestination::Staked => Self::bonded(stash)
-                .and_then(|c| Self::ledger(&c).map(|l| (c, l)))
-                .and_then(|(controller, mut l)| {
-                    l.active += amount;
-                    l.total += amount;
-                    let r = T::Currency::deposit_into_existing(stash, amount).ok();
-                    Self::update_ledger(&controller, &l);
-                    r
-                }),
+    fn make_payout(stash: &T::AccountId, amount: BalanceOf<T>) -> result::Result<(), ()> {
+        let imbalance = T::Currency::withdraw(
+            &T::PalletId::get().into_account(),
+            amount,
+            WithdrawReasons::all(),
+            ExistenceRequirement::KeepAlive,
+        )
+        .map_err(|_| ())?;
+        match Self::payee(stash) {
+            RewardDestination::Controller => match Self::bonded(stash) {
+                Some(controller) => Ok(T::Currency::resolve_creating(&controller, imbalance)),
+                None => Err(()),
+            },
+            RewardDestination::Stash => {
+                T::Currency::resolve_into_existing(stash, imbalance).map_err(|_| ())
+            }
+            RewardDestination::Staked => {
+                match Self::bonded(stash).and_then(|c| Self::ledger(&c).map(|l| (c, l))) {
+                    Some((controller, mut l)) => {
+                        l.active += imbalance.peek();
+                        l.total += imbalance.peek();
+                        let r =
+                            T::Currency::resolve_into_existing(stash, imbalance).map_err(|_| ());
+                        Self::update_ledger(&controller, &l);
+                        r
+                    }
+                    None => Err(()),
+                }
+            }
             RewardDestination::Account(dest_account) => {
-                Some(T::Currency::deposit_creating(&dest_account, amount))
+                T::Currency::resolve_creating(&dest_account, imbalance);
+                Ok(())
             }
         }
     }
@@ -2580,23 +2590,12 @@ impl<T: Config> Module<T> {
     /// Compute payout for era.
     fn end_era(active_era: ActiveEraInfo, _session_index: SessionIndex) {
         // Note: active_era_start can be None if end era is called during genesis config.
-        if let Some(active_era_start) = active_era.start {
-            let now_as_millis_u64 = T::UnixTime::now().as_millis().saturated_into::<u64>();
-
-            let era_duration = now_as_millis_u64 - active_era_start;
-            let (validator_payout, max_payout): (BalanceOf<T>, BalanceOf<T>) =
-                (Zero::zero(), Zero::zero());
-            let rest = max_payout.saturating_sub(validator_payout);
-
-            Self::deposit_event(RawEvent::EraPayout(
-                active_era.index,
-                validator_payout,
-                rest,
-            ));
+        if let Some(_active_era_start) = active_era.start {
+            let payout = Self::eras_accumulated_balance(active_era.index);
+            Self::deposit_event(RawEvent::EraPayout(active_era.index, payout, Zero::zero()));
 
             // Set ending era reward.
-            <ErasValidatorReward<T>>::insert(&active_era.index, validator_payout);
-            T::RewardRemainder::on_unbalanced(T::Currency::issue(rest));
+            <ErasValidatorReward<T>>::insert(&active_era.index, payout);
         }
     }
 
